@@ -1,0 +1,121 @@
+# Reusable workflow: validate a caller's routes.yaml with THIS repo's tools, at THIS workflow's exact commit.
+#
+# Caller usage (pin to a tag, or better, to the tag's commit SHA):
+#   jobs:
+#     validate:
+#       uses: likhith5697/platform-templates/.github/workflows/validate.yml@v0.1.1
+#       # with:
+#       #   routes_file: routes.yaml
+#
+# Steps: validate_routes.py -> render_httproutes.py (dry run, nothing applied) -> terraform fmt -check + validate on modules/.
+# Read-only: no secrets, no cloud credentials, permissions limited to reading code.
+
+name: validate
+
+on:
+  workflow_call:
+    inputs:
+      routes_file:
+        description: "Path to routes.yaml in the calling repo."
+        type: string
+        required: false
+        default: routes.yaml
+      templates_ref:
+        description: >-
+          platform-templates ref whose validator/modules to run. Leave the default: it is this file's own release tag,
+          so @v0.1.1 runs v0.1.1's tools. (A reusable workflow can't discover its own commit, so the version is
+          written into the file; ci.yml checks it matches the tag on every release.)
+        type: string
+        required: false
+        default: v0.1.1
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: 1.14.6
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # In a reusable workflow the default checkout is the CALLER's repo, at the caller's commit.
+      - name: Checkout caller repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          persist-credentials: false
+
+      - name: Check inputs
+        env:
+          ROUTES_FILE: ${{ inputs.routes_file }}
+          TEMPLATES_REF: ${{ inputs.templates_ref }}
+        run: |
+          set -euo pipefail
+          # Never fall back to the default branch: an empty/odd ref is an error, not "main".
+          if [[ ! "$TEMPLATES_REF" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+|[0-9a-f]{40})$ ]]; then
+            echo "::error::templates_ref must be a release tag (vX.Y.Z) or a full commit SHA"
+            exit 1
+          fi
+          # Relative path inside the caller repo only: no absolute paths, no "..".
+          if [[ ! "$ROUTES_FILE" =~ ^[A-Za-z0-9._/-]+$ || "$ROUTES_FILE" == /* || "$ROUTES_FILE" == *..* ]]; then
+            echo "::error::routes_file must be a relative path inside the repo (got an invalid value)"
+            exit 1
+          fi
+          test -f "caller/$ROUTES_FILE" || { echo "::error::caller/$ROUTES_FILE not found"; exit 1; }
+
+      # The validator and modules come from the pinned release, never from "whatever is on main".
+      - name: Checkout platform-templates tools at templates_ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: likhith5697/platform-templates
+          ref: ${{ inputs.templates_ref }}
+          path: platform-templates
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install validator dependencies (pinned in requirements.txt)
+        run: pip install --quiet -r platform-templates/requirements.txt
+
+      - name: validate_routes.py
+        env:
+          ROUTES_FILE: ${{ inputs.routes_file }}
+        run: python platform-templates/validate_routes.py "caller/$ROUTES_FILE"
+
+      - name: render_httproutes.py (dry run, nothing is applied)
+        env:
+          ROUTES_FILE: ${{ inputs.routes_file }}
+        run: |
+          set -euo pipefail
+          python platform-templates/render_httproutes.py "caller/$ROUTES_FILE" -o rendered-httproutes.yaml
+          count=$(grep -c '^kind: HTTPRoute$' rendered-httproutes.yaml || true)
+          {
+            echo "## Rendered HTTPRoutes (dry run): $count"
+            echo
+            echo '```yaml'
+            head -c 50000 rendered-httproutes.yaml
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt -check (modules)
+        run: terraform fmt -check -recursive -diff platform-templates/modules
+
+      - name: terraform validate (each module)
+        run: |
+          set -euo pipefail
+          for dir in platform-templates/modules/*/; do
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false -no-color
+            terraform -chdir="$dir" validate -no-color
+            echo "::endgroup::"
+          done

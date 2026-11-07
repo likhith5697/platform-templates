@@ -5,7 +5,7 @@
 # Caller usage:
 #   jobs:
 #     trigger-apply:
-#       uses: likhith5697/platform-templates/.github/workflows/trigger-apply.yml@v0.1.0
+#       uses: likhith5697/platform-templates/.github/workflows/trigger-apply.yml@v0.1.1
 #       secrets:
 #         dispatch_token: ${{ secrets.GATEWAY_INFRA_DISPATCH_TOKEN }}
 
