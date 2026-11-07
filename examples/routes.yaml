@@ -1,0 +1,26 @@
+# Example routes for the orders service. Validate with:
+#   python validate_routes.py examples/routes.yaml
+routes:
+  - name: orders-create
+    path: /orders
+    method: POST
+    namespace: orders
+    service: orders
+    port: 8080
+    auth: custom
+
+  - name: orders-list        # same path as orders-create, different method: allowed
+    path: /orders
+    method: GET
+    namespace: orders
+    service: orders
+    port: 8080
+    auth: custom
+
+  - name: orders-get
+    path: /orders/{id}
+    method: GET
+    namespace: orders
+    service: orders
+    port: 8080
+    auth: custom

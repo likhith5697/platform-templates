@@ -1,0 +1,56 @@
+# Reusable workflow: asks likhith5697/gateway-infra to run its apply pipeline.
+# It sends one repository_dispatch event carrying the caller's commit SHA and repo name, and nothing else.
+# No AWS credentials here: gateway-infra decides whether and how to apply.
+#
+# Caller usage:
+#   jobs:
+#     trigger-apply:
+#       uses: likhith5697/platform-templates/.github/workflows/trigger-apply.yml@v0.1.0
+#       secrets:
+#         dispatch_token: ${{ secrets.GATEWAY_INFRA_DISPATCH_TOKEN }}
+
+name: trigger-apply
+
+on:
+  workflow_call:
+    secrets:
+      dispatch_token:
+        description: "Token allowed to create repository_dispatch events on likhith5697/gateway-infra (Contents: write on that repo only)."
+        required: true
+
+# This workflow never uses GITHUB_TOKEN, so it gets no permissions at all.
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send repository_dispatch to gateway-infra
+        env:
+          # In a reusable workflow, the github context belongs to the CALLER's run.
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.dispatch_token }}
+          TARGET_REPO: likhith5697/gateway-infra
+          EVENT_TYPE: trigger-apply
+        run: |
+          set -euo pipefail
+
+          # Build the JSON with jq rather than string concatenation, so values can't break or inject into it.
+          payload=$(jq -n \
+            --arg event_type "$EVENT_TYPE" \
+            --arg sha "$SOURCE_SHA" \
+            --arg repo "$SOURCE_REPO" \
+            '{event_type: $event_type, client_payload: {sha: $sha, repo: $repo}}')
+
+          # GitHub answers 204 No Content on success. --fail-with-body makes any other status fail the job.
+          curl --silent --show-error --fail-with-body \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${TARGET_REPO}/dispatches" \
+            -d "$payload"
+
+          echo "Dispatched '${EVENT_TYPE}' to ${TARGET_REPO} for ${SOURCE_REPO}@${SOURCE_SHA}"
